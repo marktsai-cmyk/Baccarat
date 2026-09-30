@@ -15,6 +15,17 @@
 - `Payouts::net` settles one bet on one hand. Both the analyzer (for EV) and the simulator (for results) use it, so they always agree.
 - The commission, Tie payout and Super Tie table can be changed from the command line.
 
+## Configurable rebate (`src/bets.rs`)
+
+- `Payouts::rebate` holds a rate for each bet and a `RebateBasis`:
+  - `AllBets`: every bet earns it, so EV + rate
+  - `Losses`: only losing bets, so EV + rate × P(lose)
+  - `DecidedBets`: every bet that doesn't push, so EV + rate × (1 - P(push)); a Banker/Player bet on a tie earns nothing
+- `Payouts::net` = `net_before_rebate` + `rebate`. Win, lose and push come from `net_before_rebate`, so a rebate never turns a push into a win.
+- `BetStats` reports `ev` (before rebate), `rebate` (expected rebate) and `ev_with_rebate()`.
+- Command line: `--rebate 0.008`, or `--rebate banker=0.008,player=0.008` for per-bet rates, plus `--rebate-on all|losses|decided`. Rates must be from 0 up to (but not including) 1.
+- Example: with 0.8% on decided Banker bets, Banker EV goes from -1.0579% to -0.3340%.
+
 ## Simulator (`src/simulator.rs`)
 
 - Builds a shoe of real cards (rank and suit) and shuffles it with Fisher-Yates.
@@ -26,7 +37,7 @@
 
 ## How it was checked
 
-15 tests, run with `cargo test --release`:
+17 tests, run with `cargo test --release`:
 
 - **Brute-force deal:** for three small 12-card shoes with real suits, every ordered six-card draw (665,280 each) is dealt physically. The results match the analyzer exactly, including the color counts.
 - **Published figures (Wizard of Odds):**
@@ -34,6 +45,7 @@
   - Super Tie, 8 decks: 0.026543% same color, 0.857508% mixed colors, house edge 5.97% (10.26% with the 100/20/7 table).
   - Big/Small, 6 decks: Small wins 37.8925%, Big 62.1075%.
 - **Rules:** the Banker third-card rule is checked against the full drawing table. Hand-built hands check naturals and the Super Tie color rule.
+- **Rebate:** each basis pays the right bets on a hand-built tie. For every bet on an 8-deck shoe, EV with the rebate equals EV + rate, EV + rate × P(lose) or EV + rate × (1 - P(push)), and win/lose/push don't change.
 - **Simulator:** burn count, the rule of one more hand after the cut card, the shuffle keeping every card, replay by seed, and bad settings rejected.
 
 ## Python version (`python/`)

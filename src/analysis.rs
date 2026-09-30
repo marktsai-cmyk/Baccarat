@@ -98,8 +98,16 @@ pub struct BetStats {
     pub win: f64,
     pub lose: f64,
     pub push: f64,
-    /// Expected net units won.
+    /// Expected net units won, before any rebate.
     pub ev: f64,
+    /// Expected rebate in units.
+    pub rebate: f64,
+}
+
+impl BetStats {
+    pub fn ev_with_rebate(&self) -> f64 {
+        self.ev + self.rebate
+    }
 }
 
 impl Odds {
@@ -126,7 +134,7 @@ impl Odds {
     pub fn bet_stats(&self, bet: Bet, payouts: &Payouts) -> BetStats {
         let mut stats = BetStats::default();
         for (result, probability) in self.results() {
-            let net = payouts.net(bet, &result);
+            let net = payouts.net_before_rebate(bet, &result);
             if net > 0.0 {
                 stats.win += probability;
             } else if net < 0.0 {
@@ -135,6 +143,7 @@ impl Odds {
                 stats.push += probability;
             }
             stats.ev += probability * net;
+            stats.rebate += probability * payouts.rebate(bet, net);
         }
         stats
     }
@@ -221,6 +230,7 @@ pub fn analyze(shoe: &Shoe) -> Result<Odds, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bets::{Rebate, RebateBasis};
     use crate::rules::{Card, Coup, Suit};
 
     fn assert_close(actual: f64, expected: f64, tolerance: f64) {
@@ -310,6 +320,24 @@ mod tests {
         assert_close(big.win, 0.621075, 5e-7);
         assert_close(small.ev, -0.0527, 5e-5);
         assert_close(big.ev, -0.0435445, 1e-6);
+    }
+
+    #[test]
+    fn rebate_adds_to_ev_on_the_chosen_bets() {
+        let odds = analyze(&Shoe::new(8)).unwrap();
+        let rate = 0.008;
+        for bet in Bet::ALL {
+            let plain = odds.bet_stats(bet, &Payouts::default());
+            let with_rebate = |basis| {
+                let payouts = Payouts { rebate: Rebate { rates: [rate; 6], basis }, ..Payouts::default() };
+                let stats = odds.bet_stats(bet, &payouts);
+                assert_eq!((stats.win, stats.lose, stats.push, stats.ev), (plain.win, plain.lose, plain.push, plain.ev));
+                stats.ev_with_rebate()
+            };
+            assert_close(with_rebate(RebateBasis::AllBets), plain.ev + rate, 1e-12);
+            assert_close(with_rebate(RebateBasis::Losses), plain.ev + rate * plain.lose, 1e-12);
+            assert_close(with_rebate(RebateBasis::DecidedBets), plain.ev + rate * (1.0 - plain.push), 1e-12);
+        }
     }
 
     #[test]

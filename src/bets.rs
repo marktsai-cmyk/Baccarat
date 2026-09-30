@@ -27,6 +27,33 @@ impl Bet {
     }
 }
 
+/// Which bets earn the rebate.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RebateBasis {
+    /// Every bet, win or lose.
+    AllBets,
+    /// Only bets that lose.
+    Losses,
+    /// Every bet that doesn't push, so a Banker or Player bet on a tie earns nothing.
+    DecidedBets,
+}
+
+/// Share of the amount bet that the house pays back, on top of what the bet itself pays.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Rebate {
+    /// Rate for each bet, in the order of `Bet::ALL`, e.g. 0.008 for 0.8%.
+    pub rates: [f64; 6],
+    pub basis: RebateBasis,
+}
+
+impl Rebate {
+    pub const NONE: Rebate = Rebate { rates: [0.0; 6], basis: RebateBasis::AllBets };
+
+    pub fn is_none(&self) -> bool {
+        self.rates.iter().all(|&rate| rate == 0.0)
+    }
+}
+
 /// What each bet pays, as N for N:1.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Payouts {
@@ -39,18 +66,37 @@ pub struct Payouts {
     pub small: f64,
     /// Super Tie: same-color six-card tie on 6-9, mixed-color one, any other tie.
     pub super_tie: [f64; 3],
+    pub rebate: Rebate,
 }
 
 impl Default for Payouts {
     fn default() -> Self {
         // Big/Small as dealt by Playtech; Super Tie as at the Bicycle Casino.
-        Self { banker_commission: 0.05, tie: 8.0, big: 0.54, small: 1.5, super_tie: [100.0, 25.0, 7.0] }
+        Self { banker_commission: 0.05, tie: 8.0, big: 0.54, small: 1.5, super_tie: [100.0, 25.0, 7.0], rebate: Rebate::NONE }
     }
 }
 
 impl Payouts {
-    /// Net units won (negative when lost) by a 1-unit `bet` on a coup that ended in `result`.
+    /// Net units won (negative when lost) by a 1-unit `bet` on a coup that ended in `result`,
+    /// rebate included.
     pub fn net(&self, bet: Bet, result: &CoupResult) -> f64 {
+        let before_rebate = self.net_before_rebate(bet, result);
+        before_rebate + self.rebate(bet, before_rebate)
+    }
+
+    /// Rebate paid on a 1-unit `bet` that settled for `net_before_rebate` units.
+    pub fn rebate(&self, bet: Bet, net_before_rebate: f64) -> f64 {
+        let earns_rebate = match self.rebate.basis {
+            RebateBasis::AllBets => true,
+            RebateBasis::Losses => net_before_rebate < 0.0,
+            RebateBasis::DecidedBets => net_before_rebate != 0.0,
+        };
+        if earns_rebate { self.rebate.rates[bet as usize] } else { 0.0 }
+    }
+
+    /// Net units won (negative when lost) by a 1-unit `bet` on a coup that ended in `result`,
+    /// before any rebate.
+    pub fn net_before_rebate(&self, bet: Bet, result: &CoupResult) -> f64 {
         let pays_if = |won: bool, payout: f64| if won { payout } else { -1.0 };
         match bet {
             Bet::Banker => match result.outcome {
@@ -99,5 +145,18 @@ mod tests {
 
         let four_card_tie = CoupResult { outcome: Outcome::Tie, cards: 4, super_tie: Some(SuperTie::OtherTie) };
         assert_eq!(nets(four_card_tie), [0.0, 0.0, 8.0, -1.0, 1.5, 7.0]);
+    }
+
+    #[test]
+    fn pays_rebate_on_the_chosen_bets() {
+        let tie = CoupResult { outcome: Outcome::Tie, cards: 4, super_tie: Some(SuperTie::OtherTie) };
+        let rebate_on = |basis| {
+            let payouts = Payouts { rebate: Rebate { rates: [0.01, 0.01, 0.0, 0.02, 0.02, 0.0], basis }, ..Payouts::default() };
+            Bet::ALL.map(|bet| payouts.net(bet, &tie))
+        };
+        // On a 4-card tie: Banker and Player push, Tie wins, Big loses, Small wins, Super Tie wins.
+        assert_eq!(rebate_on(RebateBasis::AllBets), [0.01, 0.01, 8.0, -0.98, 1.52, 7.0]);
+        assert_eq!(rebate_on(RebateBasis::Losses), [0.0, 0.0, 8.0, -0.98, 1.5, 7.0]);
+        assert_eq!(rebate_on(RebateBasis::DecidedBets), [0.0, 0.0, 8.0, -0.98, 1.52, 7.0]);
     }
 }

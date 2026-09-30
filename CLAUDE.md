@@ -15,7 +15,7 @@ python -m unittest discover -s python           # tests for the old Python versi
 ## Layout
 
 - `src/rules.rs`: `Card`, `Coup::deal`, third-card rules, `CoupResult` (what bets settle on)
-- `src/bets.rs`: `Bet`, `Payouts`, and `Payouts::net`, the single source of truth for settling a bet
+- `src/bets.rs`: `Bet`, `Payouts`, `Rebate`, and `Payouts::net` (= `net_before_rebate` + `rebate`), the single source of truth for settling a bet. Classify win/lose/push with `net_before_rebate`, never with `net`.
 - `src/analysis.rs`: `Shoe` (counts by point value), `analyze`, `Odds`
 - `src/simulator.rs`: shuffle, burn, cut card, and the built-in xoshiro256** random number generator
 - `src/main.rs`: command-line parsing and output only, no game logic

@@ -40,6 +40,15 @@ Super Tie     9.5156%  90.4844%   0.0000%    -5.9716%                     -
 | `--commission RATE` | both | Banker commission | 0.05 |
 | `--tie-pays N` | both | Tie pays N:1 | 8 |
 | `--super-tie-pays S,M,O` | both | Super Tie payouts (see below) | 100,25,7 |
+| `--rebate RATE` | both | Pay back RATE of every bet, e.g. `0.008` for 0.8% | 0 |
+| `--rebate BET=RATE,...` | both | A rate per bet (others get none), e.g. `banker=0.008,player=0.008`. Bets: banker, player, tie, big, small, super-tie | none |
+| `--rebate-on all\|losses\|decided` | both | Which bets earn the rebate: every bet, only losing bets, or every bet that doesn't push | all |
+
+With a rebate, the analysis adds **Rebate** and **EV + rebate** columns, and the simulator shows the bet result, the rebate and the total separately. Win, lose and push are still based on the bet itself, so a rebate never turns a push into a win.
+
+```bash
+cargo run --release -- --rebate banker=0.008,player=0.008 --rebate-on decided
+```
 
 ## Bet rules
 

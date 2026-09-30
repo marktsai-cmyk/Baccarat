@@ -3,7 +3,7 @@ use std::process::ExitCode;
 use std::str::FromStr;
 use std::time::SystemTime;
 
-use baccarat_ev::{Bet, Card, DEFAULT_CUT, Outcome, Payouts, Shoe, SuperTie, analyze, simulate_shoe};
+use baccarat_ev::{Bet, Card, DEFAULT_CUT, Outcome, Payouts, RebateBasis, Shoe, SuperTie, analyze, simulate_shoe};
 
 const USAGE: &str = "\
 Baccarat (Punto Banco) odds: exact win rates and EV of each bet, or a simulated shoe.
@@ -22,6 +22,14 @@ Payouts:
   --tie-pays N            Tie pays N:1 (default: 8)
   --super-tie-pays S,M,O  Super Tie pays S:1 on a same-color six-card tie of 6-9, M:1 on a
                           mixed-color one and O:1 on any other tie (default: 100,25,7)
+
+Rebate:
+  --rebate RATE           pay back RATE of every bet, e.g. 0.008 for 0.8% (default: 0)
+  --rebate BET=RATE,...   a rate per bet, others get none, e.g. banker=0.008,player=0.008
+                          (bets: banker, player, tie, big, small, super-tie)
+  --rebate-on all|losses|decided
+                          which bets earn it: every bet, only losing bets, or every bet
+                          that doesn't push (default: all)
 
 Big pays 0.54:1 when 5 or 6 cards are dealt, Small 1.5:1 when only 4 are.";
 
@@ -64,6 +72,8 @@ fn parse_args(args: Vec<String>) -> Result<Options, String> {
             "--commission" => options.payouts.banker_commission = parse_value(&flag, args.next())?,
             "--tie-pays" => options.payouts.tie = parse_value(&flag, args.next())?,
             "--super-tie-pays" => options.payouts.super_tie = parse_super_tie_pays(&flag, args.next())?,
+            "--rebate" => options.payouts.rebate.rates = parse_rebate_rates(&flag, args.next())?,
+            "--rebate-on" => options.payouts.rebate.basis = parse_rebate_basis(&flag, args.next())?,
             "--dealt" => {
                 while let Some(card) = args.next_if(|arg| !arg.starts_with("--")) {
                     options.dealt.push(card);
@@ -90,6 +100,41 @@ fn parse_super_tie_pays(flag: &str, value: Option<String>) -> Result<[f64; 3], S
     pays.try_into().map_err(|_| format!("{flag} needs 3 payouts, e.g. 100,25,7"))
 }
 
+/// Parses one rate for every bet ("0.008") or a rate per bet ("banker=0.008,player=0.008").
+fn parse_rebate_rates(flag: &str, value: Option<String>) -> Result<[f64; 6], String> {
+    let value = value.ok_or_else(|| format!("{flag} needs a value"))?;
+    let parse_rate = |rate: &str| -> Result<f64, String> {
+        rate.trim()
+            .parse()
+            .ok()
+            .filter(|rate| (0.0..1.0).contains(rate))
+            .ok_or_else(|| format!("invalid rebate rate {rate:?} for {flag}: use a fraction from 0 to under 1, e.g. 0.008"))
+    };
+    if !value.contains('=') {
+        return Ok([parse_rate(&value)?; 6]);
+    }
+    let mut rates = [0.0; 6];
+    for entry in value.split(',') {
+        let (name, rate) = entry.split_once('=').ok_or_else(|| format!("invalid rebate {entry:?} for {flag}, e.g. banker=0.008"))?;
+        let name = name.trim().to_ascii_lowercase();
+        let bet = Bet::ALL
+            .into_iter()
+            .find(|bet| bet.name().to_ascii_lowercase().replace(' ', "-") == name)
+            .ok_or_else(|| format!("unknown bet {name:?} for {flag}"))?;
+        rates[bet as usize] = parse_rate(rate)?;
+    }
+    Ok(rates)
+}
+
+fn parse_rebate_basis(flag: &str, value: Option<String>) -> Result<RebateBasis, String> {
+    match value.as_deref() {
+        Some("all") => Ok(RebateBasis::AllBets),
+        Some("losses") => Ok(RebateBasis::Losses),
+        Some("decided") => Ok(RebateBasis::DecidedBets),
+        _ => Err(format!("{flag} needs one of: all, losses, decided")),
+    }
+}
+
 fn run_analysis(options: &Options) -> Result<(), String> {
     if options.cut.is_some() || options.seed.is_some() {
         return Err("--cut and --seed only apply to simulate".to_string());
@@ -100,14 +145,17 @@ fn run_analysis(options: &Options) -> Result<(), String> {
     }
     let odds = analyze(&shoe)?;
 
+    let has_rebate = !options.payouts.rebate.is_none();
     println!("Shoe: {} cards left ({} decks, {} dealt)\n", shoe.cards_left(), options.decks, options.dealt.len());
-    println!("{:<11}{:>10}{:>10}{:>10}{:>12}{:>22}", "Bet", "Win", "Lose", "Push", "EV / unit", "Win rate excl. ties");
+    let rebate_header = if has_rebate { format!("{:>10}{:>14}", "Rebate", "EV + rebate") } else { String::new() };
+    println!("{:<11}{:>10}{:>10}{:>10}{:>12}{rebate_header}{:>22}", "Bet", "Win", "Lose", "Push", "EV / unit", "Win rate excl. ties");
     for bet in Bet::ALL {
         let stats = odds.bet_stats(bet, &options.payouts);
         let decided = stats.win + stats.lose;
         let excluding_ties = if stats.push > 0.0 && decided > 0.0 { percent(stats.win / decided) } else { "-".to_string() };
+        let rebate = if has_rebate { format!("{:>10}{:>14}", percent(stats.rebate), percent(stats.ev_with_rebate())) } else { String::new() };
         println!(
-            "{:<11}{:>10}{:>10}{:>10}{:>12}{excluding_ties:>22}",
+            "{:<11}{:>10}{:>10}{:>10}{:>12}{rebate}{excluding_ties:>22}",
             bet.name(),
             percent(stats.win),
             percent(stats.lose),
@@ -144,6 +192,7 @@ fn run_simulation(options: &Options) -> Result<(), String> {
     let mut small = 0;
     let mut super_ties = [0usize; 3];
     let mut net = [0.0; Bet::ALL.len()];
+    let mut rebates = [0.0; Bet::ALL.len()];
     for (number, coup) in run.coups.iter().enumerate() {
         let result = coup.result();
         outcomes[result.outcome as usize] += 1;
@@ -153,8 +202,10 @@ fn run_simulation(options: &Options) -> Result<(), String> {
         if let Some(category) = result.super_tie {
             super_ties[category as usize] += 1;
         }
-        for (units, bet) in net.iter_mut().zip(Bet::ALL) {
-            *units += options.payouts.net(bet, &result);
+        for (bet, (units, rebate)) in Bet::ALL.into_iter().zip(net.iter_mut().zip(&mut rebates)) {
+            let before_rebate = options.payouts.net_before_rebate(bet, &result);
+            *units += before_rebate;
+            *rebate += options.payouts.rebate(bet, before_rebate);
         }
         let size = format!("{} {}", result.cards, if result.cards == 4 { "Small" } else { "Big" });
         let super_tie = match result.super_tie {
@@ -179,8 +230,15 @@ fn run_simulation(options: &Options) -> Result<(), String> {
     println!("Big {}, Small {}", share(coups - small), share(small));
     println!("Super Tie wins: {} same color, {} mixed color, {} other ties", super_ties[0], super_ties[1], super_ties[2]);
     println!("\nNet units from a 1-unit bet on every coup:");
-    for (bet, units) in Bet::ALL.into_iter().zip(net) {
-        println!("  {:<11}{units:>+9.2}", bet.name());
+    if options.payouts.rebate.is_none() {
+        for (bet, units) in Bet::ALL.into_iter().zip(net) {
+            println!("  {:<11}{units:>+9.2}", bet.name());
+        }
+    } else {
+        println!("  {:<11}{:>9}{:>9}{:>9}", "", "Bet", "Rebate", "Total");
+        for (bet, (units, rebate)) in Bet::ALL.into_iter().zip(net.into_iter().zip(rebates)) {
+            println!("  {:<11}{units:>+9.2}{rebate:>+9.2}{:>+9.2}", bet.name(), units + rebate);
+        }
     }
     Ok(())
 }

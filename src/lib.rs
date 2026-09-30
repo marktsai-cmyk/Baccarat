@@ -7,6 +7,6 @@ pub mod rules;
 pub mod simulator;
 
 pub use analysis::{BetStats, Odds, Shoe, analyze, card_points};
-pub use bets::{Bet, Payouts};
+pub use bets::{Bet, Payouts, Rebate, RebateBasis};
 pub use rules::{Card, Coup, CoupResult, Outcome, Suit, SuperTie};
 pub use simulator::{DEFAULT_CUT, MIN_CUT, ShoeRun, simulate_shoe};
