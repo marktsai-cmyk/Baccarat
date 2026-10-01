@@ -11,4 +11,4 @@ pub use analysis::{BetStats, Odds, Shoe, analyze, card_points};
 pub use bets::{Bet, Payouts, Rebate, RebateBasis};
 pub use config::{DEFAULT_CONFIG, load_payouts, parse_payouts};
 pub use rules::{Card, Coup, CoupResult, Outcome, Suit, SuperTie};
-pub use simulator::{DEFAULT_CUT, MIN_CUT, ShoeRun, simulate_shoe};
+pub use simulator::{DEFAULT_CUT, MIN_CUT, ShoeRun, random_seed, simulate_shoe};

@@ -1,0 +1,201 @@
+openapi: 3.1.0
+info:
+  title: Baccarat EV API
+  version: 0.1.0
+  description: |
+    Exact win rates and expected values (EV) of Punto Banco baccarat bets.
+
+    - Probabilities and EVs are fractions: 0.458597 means 45.8597%. EV is the net units won by a
+      1-unit bet; a negative EV is the house edge.
+    - Payouts a request leaves out come from the server's payouts file (baccarat.toml), or the
+      built-in defaults when it has none. Every answer echoes the payouts it used.
+    - Errors come back as `{ "error": "..." }` with status 400 (bad input), 413 (body over 64 KB)
+      or 415 (body not sent as application/json).
+paths:
+  /health:
+    get:
+      summary: Check that the server is up
+      responses:
+        '200':
+          description: The server is up.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status: { type: string, const: ok }
+  /openapi.yaml:
+    get:
+      summary: This description
+      responses:
+        '200':
+          description: The OpenAPI description of the API.
+          content:
+            application/yaml: {}
+  /analyze:
+    post:
+      summary: Exact odds and EV of every bet for the next hand
+      description: |
+        Works out the odds by going through every way the next hand can be dealt from the shoe.
+        Results are cached per shoe, so repeating a shoe is fast.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AnalyzeRequest' }
+            examples:
+              fresh-shoe:
+                summary: A fresh 8-deck shoe with the server's payouts
+                value: {}
+              dealt-and-rebate:
+                summary: Cards already dealt, Super 6 at 15:1, and a rebate on Banker
+                value:
+                  decks: 8
+                  dealt: [K, '5', A, '9']
+                  payouts:
+                    super_six: 15
+                    rebate: { on: decided, rates: { banker: 0.008 } }
+      responses:
+        '200':
+          description: Odds of every bet.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AnalyzeResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '413': { $ref: '#/components/responses/TooLarge' }
+        '415': { $ref: '#/components/responses/NotJson' }
+components:
+  responses:
+    BadRequest:
+      description: The request is wrong, for example an unknown card, field or bet, or a value out of range.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example: { error: 'unknown card "X"' }
+    TooLarge:
+      description: The request body is over 64 KB.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    NotJson:
+      description: The request was not sent with `Content-Type: application/json`.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error: { type: string }
+    Bet:
+      type: string
+      enum: [banker, player, tie, big, small, super-tie, player-pair, banker-pair, super-6]
+    RebateOn:
+      type: string
+      description: Which bets earn the rebate. `decided` is every bet that doesn't push.
+      enum: [all, losses, decided]
+    Decks:
+      type: integer
+      minimum: 1
+      maximum: 31
+      default: 8
+    Payouts:
+      type: object
+      description: Payouts to change for this request, as N for N:1. Anything left out keeps the server's setting.
+      additionalProperties: false
+      properties:
+        banker_commission: { type: number, minimum: 0, exclusiveMaximum: 1, description: 'Share of a Banker win kept by the house, e.g. 0.05' }
+        tie: { type: number, minimum: 0 }
+        big: { type: number, minimum: 0, description: 'Big: 5 or 6 cards dealt' }
+        small: { type: number, minimum: 0, description: 'Small: only 4 cards dealt' }
+        super_tie:
+          type: array
+          description: 'Super Tie: same-color six-card tie of 6-9, mixed-color one, any other tie'
+          items: { type: number, minimum: 0 }
+          minItems: 3
+          maxItems: 3
+        pair: { type: number, minimum: 0, description: 'Player Pair and Banker Pair' }
+        super_six: { type: number, minimum: 0, description: 'Super 6: Banker wins with 6' }
+        rebate:
+          type: object
+          description: Giving `rate` or `rates` replaces the server's rebate rates.
+          additionalProperties: false
+          properties:
+            on: { $ref: '#/components/schemas/RebateOn' }
+            rate: { type: number, minimum: 0, exclusiveMaximum: 1, description: Rate for every bet }
+            rates:
+              type: object
+              description: Rates for single bets, keyed by bet, overriding `rate`
+              propertyNames: { $ref: '#/components/schemas/Bet' }
+              additionalProperties: { type: number, minimum: 0, exclusiveMaximum: 1 }
+    PayoutsUsed:
+      type: object
+      description: The payouts the answer was worked out with.
+      required: [banker_commission, tie, big, small, super_tie, pair, super_six, rebate]
+      properties:
+        banker_commission: { type: number }
+        tie: { type: number }
+        big: { type: number }
+        small: { type: number }
+        super_tie: { type: array, items: { type: number }, minItems: 3, maxItems: 3 }
+        pair: { type: number }
+        super_six: { type: number }
+        rebate:
+          type: object
+          required: [on, rates]
+          properties:
+            on: { $ref: '#/components/schemas/RebateOn' }
+            rates:
+              type: object
+              description: Every bet's rate
+              additionalProperties: { type: number }
+    AnalyzeRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        decks: { $ref: '#/components/schemas/Decks' }
+        dealt:
+          type: array
+          description: Cards already dealt from the shoe, by rank
+          items: { type: string, enum: [A, '2', '3', '4', '5', '6', '7', '8', '9', '10', T, J, Q, K] }
+        payouts: { $ref: '#/components/schemas/Payouts' }
+    AnalyzeResponse:
+      type: object
+      required: [shoe, payouts, bets, super_tie]
+      properties:
+        shoe:
+          type: object
+          required: [decks, dealt, cards_left]
+          properties:
+            decks: { type: integer }
+            dealt: { type: integer, description: Number of cards dealt }
+            cards_left: { type: integer }
+        payouts: { $ref: '#/components/schemas/PayoutsUsed' }
+        bets:
+          type: array
+          items: { $ref: '#/components/schemas/BetOdds' }
+        super_tie:
+          type: object
+          description: Chance of each Super Tie win
+          required: [same_color, mixed_color, other]
+          properties:
+            same_color: { type: number }
+            mixed_color: { type: number }
+            other: { type: number }
+    BetOdds:
+      type: object
+      required: [bet, name, win, lose, push, ev, rebate, ev_with_rebate, win_rate_excluding_ties]
+      properties:
+        bet: { $ref: '#/components/schemas/Bet' }
+        name: { type: string, example: Super Tie }
+        win: { type: number }
+        lose: { type: number }
+        push: { type: number }
+        ev: { type: number, description: EV before any rebate }
+        rebate: { type: number, description: Expected rebate }
+        ev_with_rebate: { type: number }
+        win_rate_excluding_ties:
+          type: [number, 'null']
+          description: win / (win + lose), only for bets that can push (Banker, Player)

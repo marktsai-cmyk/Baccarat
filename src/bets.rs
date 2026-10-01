@@ -116,6 +116,31 @@ impl Default for Payouts {
 }
 
 impl Payouts {
+    /// Checks that every payout is 0 or more and every rate (commission, rebate) is from 0 to
+    /// under 1.
+    pub fn validate(&self) -> Result<(), String> {
+        let is_rate = |rate: f64| (0.0..1.0).contains(&rate);
+        let is_payout = |payout: f64| payout.is_finite() && payout >= 0.0;
+        if !is_rate(self.banker_commission) {
+            return Err(format!("banker_commission must be from 0 to under 1, found {}", self.banker_commission));
+        }
+        let payouts = [("tie", self.tie), ("big", self.big), ("small", self.small), ("pair", self.pair), ("super_six", self.super_six)];
+        for (name, payout) in payouts {
+            if !is_payout(payout) {
+                return Err(format!("{name} must pay 0 or more, found {payout}"));
+            }
+        }
+        if !self.super_tie.into_iter().all(is_payout) {
+            return Err(format!("super_tie payouts must be 0 or more, found {:?}", self.super_tie));
+        }
+        for (bet, rate) in Bet::ALL.into_iter().zip(self.rebate.rates) {
+            if !is_rate(rate) {
+                return Err(format!("the rebate rate for {} must be from 0 to under 1, found {rate}", bet.key()));
+            }
+        }
+        Ok(())
+    }
+
     /// Net units won (negative when lost) by a 1-unit `bet` on a coup that ended in `result`,
     /// rebate included.
     pub fn net(&self, bet: Bet, result: &CoupResult) -> f64 {
@@ -194,6 +219,20 @@ mod tests {
 
         let banker_six_with_pairs = CoupResult { banker_six: true, player_pair: true, banker_pair: true, ..result(Outcome::Banker, 5, None) };
         assert_eq!(nets(banker_six_with_pairs), [0.95, -1.0, -1.0, 0.54, -1.0, -1.0, 11.0, 11.0, 12.0]);
+    }
+
+    #[test]
+    fn validates_payouts_and_rates() {
+        assert_eq!(Payouts::default().validate(), Ok(()));
+        let bad = [
+            Payouts { banker_commission: 1.0, ..Payouts::default() },
+            Payouts { tie: -1.0, ..Payouts::default() },
+            Payouts { super_tie: [100.0, f64::NAN, 7.0], ..Payouts::default() },
+            Payouts { rebate: Rebate { rates: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.5], basis: RebateBasis::AllBets }, ..Payouts::default() },
+        ];
+        for payouts in bad {
+            assert!(payouts.validate().is_err(), "{payouts:?}");
+        }
     }
 
     #[test]

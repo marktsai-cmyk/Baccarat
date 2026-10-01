@@ -2,6 +2,9 @@
 name = "baccarat-ev"
 version = "0.1.0"
 edition = "2024"
-description = "Exact win rates and expected values for the Banker, Player and Tie bets in Punto Banco baccarat"
+description = "Exact win rates and expected values of Punto Banco baccarat bets, plus a full-shoe simulator"
 
 [dependencies]
+
+[workspace]
+members = ["server"]

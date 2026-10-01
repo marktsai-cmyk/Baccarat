@@ -11,7 +11,7 @@ use crate::rules::{CoupResult, Outcome, SuperTie, banker_draws, player_draws, su
 pub const CARDS_PER_DECK: [u32; 10] = [16, 4, 4, 4, 4, 4, 4, 4, 4, 4];
 
 /// A shoe's make-up by point value.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Shoe {
     /// Cards the shoe started with. Each value is half red and half black, and the cards
     /// worth 0 are split evenly between 10, J, Q and K.

@@ -1,12 +1,12 @@
 # Baccarat EV
 
-Exact win rates and expected values (EV) for Punto Banco baccarat bets, plus a simulator that deals a full shoe.
+Exact win rates and expected values (EV) for Punto Banco baccarat bets, from the command line or over a REST API, plus a shoe simulator for internal use (command line only).
 
 Bets covered: **Banker**, **Player**, **Tie**, **Big**, **Small**, **Super Tie**, **Player Pair**, **Banker Pair** and **Super 6**.
 
 ## Quick start
 
-Needs Rust 1.85 or newer (edition 2024). There are no outside dependencies.
+Needs Rust 1.85 or newer (edition 2024). The calculator and command-line tool have no outside dependencies. Only the REST API server (`server/`) uses outside crates (axum, tokio, serde).
 
 ```bash
 cargo run --release                                   # exact odds for a fresh 8-deck shoe
@@ -14,7 +14,8 @@ cargo run --release -- --decks 6                      # 6-deck shoe
 cargo run --release -- --dealt K 5 A 9 10 6           # odds after these cards were dealt
 cargo run --release -- simulate                       # deal one full shoe, random seed
 cargo run --release -- simulate --seed 2026 --cut 16  # replay a shoe, cut card 16 from the end
-cargo test --release                                  # run the tests
+cargo run --release -p baccarat-server                # REST API on http://127.0.0.1:3000
+cargo test --release --workspace                      # run all the tests
 ```
 
 ## Example output (8 decks)
@@ -79,6 +80,49 @@ With a rebate, the analysis adds **Rebate** and **EV + rebate** columns, and the
 cargo run --release -- --rebate banker=0.008,player=0.008 --rebate-on decided
 ```
 
+## REST API
+
+```bash
+cargo run --release -p baccarat-server -- --addr 127.0.0.1:3000 --config baccarat.toml
+```
+
+Both options are optional. Like the command-line tool, the server reads `baccarat.toml` from the folder it runs in. Its payouts apply to every request that doesn't change them.
+
+| Endpoint | Does |
+|---|---|
+| `GET /health` | `{ "status": "ok" }` |
+| `GET /openapi.yaml` | The full API description ([server/openapi.yaml](server/openapi.yaml)) |
+| `POST /analyze` | Exact odds and EV of every bet for the next hand |
+
+The simulator is for internal use, so it isn't part of the API. Run it with `cargo run --release -- simulate`.
+
+Probabilities and EVs are fractions (0.458597 = 45.8597%). Every field of a request is optional, so `{}` works.
+
+```bash
+curl -X POST http://127.0.0.1:3000/analyze -H "Content-Type: application/json" \
+  -d '{"decks": 8, "dealt": ["K", "5"], "payouts": {"super_six": 15, "rebate": {"on": "decided", "rates": {"banker": 0.008}}}}'
+```
+
+The answer, shortened and rounded:
+
+```json
+{
+  "shoe": { "decks": 8, "dealt": 2, "cards_left": 414 },
+  "payouts": { "banker_commission": 0.05, "tie": 8.0, "super_six": 15.0, "rebate": { "on": "decided", "rates": { "banker": 0.008, "player": 0.0 } } },
+  "bets": [
+    { "bet": "banker", "name": "Banker", "win": 0.458551, "lose": 0.446266, "push": 0.095183,
+      "ev": -0.010643, "rebate": 0.007239, "ev_with_rebate": -0.003404, "win_rate_excluding_ties": 0.506789 }
+  ],
+  "super_tie": { "same_color": 0.000265, "mixed_color": 0.008565, "other": 0.086353 }
+}
+```
+
+The full answer lists all 9 bets, and every payout and rebate rate.
+
+- **Payouts in a request:** a request's `payouts` change only the fields they name. Giving a rebate `rate` or `rates` replaces the server's rebate rates.
+- **Errors:** they come back as `{ "error": "..." }`. Bad input (an unknown card, field or bet, or a value out of range) gets 400, a body over 64 KB gets 413, and a body not sent as JSON gets 415.
+- **Caching:** odds are cached per shoe, so repeating a shoe skips the 1 ms analysis.
+
 ## Bet rules
 
 | Bet | Wins when | Pays |
@@ -104,6 +148,7 @@ src/config.rs     reads payouts and the rebate from baccarat.toml
 src/analysis.rs   exact odds by going through every possible deal
 src/simulator.rs  shuffle, burn, deal a full shoe to the cut card
 src/main.rs       command-line tool
+server/           REST API (axum) for the odds: routes and JSON shapes in src/lib.rs, openapi.yaml, tests/api.rs
 python/           the first version of the calculator, in Python
 docs/             what is done and what is next
 ```

@@ -1,5 +1,8 @@
 //! Deals a full shoe the way a Punto Banco table does: shuffle, burn, then deal to the cut card.
 
+use std::hash::{BuildHasher, RandomState};
+use std::time::SystemTime;
+
 use crate::rules::{Card, Coup, Suit};
 
 /// Cut card position, in cards from the end of the shoe, when none is given.
@@ -46,6 +49,11 @@ pub fn simulate_shoe(decks: u32, cut: usize, seed: u64) -> Result<ShoeRun, Strin
         }
     }
     Ok(ShoeRun { burned: cards[..burned].to_vec(), coups, cards_left: cards.len() - next })
+}
+
+/// A seed for a new shoe, different on every call.
+pub fn random_seed() -> u64 {
+    RandomState::new().hash_one(SystemTime::now())
 }
 
 fn new_shoe(decks: u32) -> Vec<Card> {

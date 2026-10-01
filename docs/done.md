@@ -44,9 +44,20 @@
 - Prints every hand with the side bets it won, then counts and the net result of betting 1 unit on every bet each hand.
 - About 30 µs per 8-deck shoe (around 81 hands).
 
+## REST API (`server/`)
+
+- A separate crate, `baccarat-server`, in a Cargo workspace with the library. It uses axum 0.8 on tokio with serde, so the outside crates stay out of the library and the command-line tool.
+- `GET /health`, `GET /openapi.yaml` (the API description, [server/openapi.yaml](../server/openapi.yaml)) and `POST /analyze`. See the README for request and answer examples.
+- **No simulation:** the simulator is for internal use, so it stays in the command-line tool and isn't served. A test checks that `/simulate` gives 404 and that the API description doesn't mention it.
+- **Payouts:** the server reads `baccarat.toml` (or `--config FILE`) at start-up. A request's `payouts` change only the fields they name, and giving a rebate `rate` or `rates` replaces the server's rebate rates. Every answer echoes the payouts it used.
+- **Input checks:** request types reject unknown fields. Decks must be 1-31, and payouts go through `Payouts::validate`. Every error is JSON `{ "error": "..." }`: 400 for bad input, 413 for a body over 64 KB, 415 for a body not sent as JSON.
+- **Cache:** odds are cached per shoe (up to 10,000 shoes, then the cache starts over), since payouts are applied after the analysis. A cache miss runs the analysis on a blocking thread, so it doesn't hold up other requests.
+- **JSON types:** the request and answer types live in the server crate, so the library has no serde derives.
+- `Payouts::validate` was added to the library for the server, and the command-line tool now uses it too (it now rejects `--commission 5`).
+
 ## How it was checked
 
-22 tests, run with `cargo test --release`:
+31 tests, run with `cargo test --release --workspace` (23 in the library, 8 in the API):
 
 - **Brute-force deal:** for three small 12-card shoes with real ranks and suits, every ordered six-card draw (665,280 each) is dealt physically. The results match the analyzer exactly: outcomes, card counts, Banker wins with 6, color counts and both pair chances.
 - **Published figures (Wizard of Odds):**
@@ -58,6 +69,8 @@
 - **Rules:** the Banker third-card rule is checked against the full drawing table. Hand-built hands check naturals, the Super Tie color rule, pairs by rank (K-K yes, K-Q no) and a Banker win with 6.
 - **Rebate:** each basis pays the right bets on a hand-built tie. For every bet on an 8-deck shoe, EV with the rebate equals EV + rate, EV + rate × P(lose) or EV + rate × (1 - P(push)), and win/lose/push don't change.
 - **Payouts file:** the shipped file equals the defaults, a sample file sets payouts and per-bet rebates, and eight kinds of mistake give the right error and line number.
+- **Payout checks:** `Payouts::validate` accepts the defaults and rejects a 100% commission, a negative payout, a NaN Super Tie payout and a rebate rate over 1.
+- **REST API** (`server/tests/api.rs`, routes called in-process): health; the OpenAPI file lists every route and bet; a fresh shoe matches the published Banker, pair, Super 6 and Super Tie figures; request payouts change only what they name; the cache keeps one entry per shoe whatever the payouts; `/simulate` is not served; ten kinds of bad input each get a 400 with the right message; a body not sent as JSON gets 415, and one over 64 KB gets 413.
 - **Simulator:** burn count, the rule of one more hand after the cut card, the shuffle keeping every card, replay by seed, and bad settings rejected.
 
 ## Python version (`python/`)

@@ -1,11 +1,10 @@
-use std::hash::{BuildHasher, RandomState};
 use std::path::Path;
 use std::process::ExitCode;
 use std::str::FromStr;
-use std::time::SystemTime;
 
 use baccarat_ev::{
-    Bet, Card, DEFAULT_CONFIG, DEFAULT_CUT, Outcome, Payouts, RebateBasis, Shoe, SuperTie, analyze, load_payouts, simulate_shoe,
+    Bet, Card, DEFAULT_CONFIG, DEFAULT_CUT, Outcome, Payouts, RebateBasis, Shoe, SuperTie, analyze, load_payouts, random_seed,
+    simulate_shoe,
 };
 
 const USAGE: &str = "\
@@ -115,6 +114,7 @@ fn parse_args(args: Vec<String>) -> Result<Options, String> {
             _ => return Err(format!("unknown argument {flag:?}")),
         }
     }
+    options.payouts.validate()?;
     Ok(options)
 }
 
@@ -211,7 +211,7 @@ fn run_simulation(options: &Options) -> Result<(), String> {
         return Err("--dealt only applies to analyze".to_string());
     }
     let cut = options.cut.unwrap_or(DEFAULT_CUT);
-    let seed = options.seed.unwrap_or_else(|| RandomState::new().hash_one(SystemTime::now()));
+    let seed = options.seed.unwrap_or_else(random_seed);
     let run = simulate_shoe(options.decks, cut, seed)?;
 
     println!("Shoe: {} decks, seed {seed}, cut card {cut} cards from the end", options.decks);
