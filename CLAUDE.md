@@ -16,6 +16,7 @@ python -m unittest discover -s python           # tests for the old Python versi
 
 - `src/rules.rs`: `Card`, `Coup::deal`, third-card rules, `CoupResult` (what bets settle on)
 - `src/bets.rs`: `Bet`, `Payouts`, `Rebate`, and `Payouts::net` (= `net_before_rebate` + `rebate`), the single source of truth for settling a bet. Classify win/lose/push with `net_before_rebate`, never with `net`.
+- `src/config.rs`: reads `baccarat.toml` into `Payouts`. A new payout setting goes in `Payouts::default()`, `parse_payouts` and `baccarat.toml` (a test keeps the file and the defaults equal).
 - `src/analysis.rs`: `Shoe` (counts by point value), `analyze`, `Odds`
 - `src/simulator.rs`: shuffle, burn, cut card, and the built-in xoshiro256** random number generator
 - `src/main.rs`: command-line parsing and output only, no game logic
@@ -25,7 +26,7 @@ python -m unittest discover -s python           # tests for the old Python versi
 - **No outside crates** in the library. If the REST API needs a web framework, keep it out of the core library.
 - **Exact analysis:** counts stay as whole `u64` numbers over the common total N(N-1)...(N-5). Only the Super Tie color share is `f64`. Keep the overflow check in `analyze`.
 - **One settlement path:** a new bet goes in `Bet` and `Payouts::net`. Both the analyzer and the simulator settle through it, so don't add payout math anywhere else.
-- **New bets need `CoupResult` data:** if a bet depends on something `CoupResult` doesn't hold (pairs, the winning total), add it there, and make `analyze` tally it and `Odds::results` report it.
+- **New bets need `CoupResult` data:** if a bet depends on something `CoupResult` doesn't hold, add it there, and make `analyze` tally it and `Odds::results` report it. Pair bets are the exception: they depend only on a hand's first two cards, so `Odds::pair_probability` is worked out directly and `bet_stats` settles them on pair / no pair.
 - **Tests check against outside numbers:** new bets need a brute-force check (`matches_dealing_every_ordered_six_cards_of_a_small_shoe`) and, when possible, a published figure (Wizard of Odds). If a published figure was rounded, allow for that rounding in the test instead of weakening the check.
 - **Simulator:** the cut card must stay at least 11 cards from the end (`MIN_CUT`), and the same seed must always replay the same shoe.
 

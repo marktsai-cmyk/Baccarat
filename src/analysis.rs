@@ -13,7 +13,8 @@ pub const CARDS_PER_DECK: [u32; 10] = [16, 4, 4, 4, 4, 4, 4, 4, 4, 4];
 /// A shoe's make-up by point value.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Shoe {
-    /// Cards the shoe started with; each value is half red and half black.
+    /// Cards the shoe started with. Each value is half red and half black, and the cards
+    /// worth 0 are split evenly between 10, J, Q and K.
     pub full: [u32; 10],
     /// Cards still in the shoe.
     pub remaining: [u32; 10],
@@ -58,6 +59,23 @@ impl Shoe {
             odds
         })
     }
+
+    /// Probability that a hand's first two cards are the same rank. Any two cards of the shoe
+    /// are equally likely to be those two, so this doesn't depend on the rest of the deal.
+    /// Cards worth 0 come in four ranks; which of them were taken out is unknown, so by
+    /// symmetry the full shoe decides how often two of them match.
+    fn pair_probability(&self) -> f64 {
+        let cards = f64::from(self.cards_left());
+        let zeros = f64::from(self.full[0]);
+        let same_rank_zeros = if zeros > 1.0 { ((zeros / 4.0 - 1.0) / (zeros - 1.0)).max(0.0) } else { 0.0 };
+        (0..10)
+            .map(|value| {
+                let count = f64::from(self.remaining[value]);
+                let same_rank = if value == 0 { same_rank_zeros } else { 1.0 };
+                count * (count - 1.0) / (cards * (cards - 1.0)) * same_rank
+            })
+            .sum()
+    }
 }
 
 /// Probability that six cards with these point values are all one color.
@@ -86,10 +104,14 @@ pub struct Odds {
     pub total: u64,
     /// Indexed by outcome (Banker, Player, Tie), then by cards dealt (4, 5, 6).
     pub counts: [[u64; 3]; 3],
+    /// Banker wins with a total of 6, by cards dealt (a part of `counts[Banker]`).
+    pub banker_sixes: [u64; 3],
     /// Six-card ties on 6-9: the ties the Super Tie bet pays by color.
     pub color_ties: u64,
     /// Expected number of those in which all six cards are one color.
     pub same_color_ties: f64,
+    /// Chance that a hand's first two cards are a pair; the same for Player and Banker.
+    pub pair_probability: f64,
 }
 
 /// Chances and expected value of a 1-unit bet.
@@ -111,29 +133,45 @@ impl BetStats {
 }
 
 impl Odds {
-    /// Probability of every distinct result that bets are settled on.
+    /// Probability of every distinct result that bets are settled on. Pairs are left out
+    /// (always `false`): see [`Odds::pair_probability`].
     pub fn results(&self) -> Vec<(CoupResult, f64)> {
         let total = self.total as f64;
         let mut results = Vec::new();
+        let mut push = |outcome, cards, super_tie, banker_six, count: f64| {
+            let result = CoupResult { outcome, cards, super_tie, banker_six, player_pair: false, banker_pair: false };
+            results.push((result, count / total));
+        };
         for (outcome, by_cards) in [Outcome::Banker, Outcome::Player, Outcome::Tie].into_iter().zip(self.counts) {
-            for (cards, count) in (4..=6).zip(by_cards) {
+            for ((cards, count), sixes) in (4..=6).zip(by_cards).zip(self.banker_sixes) {
                 let mut count = count as f64;
+                if outcome == Outcome::Banker {
+                    push(outcome, cards, None, true, sixes as f64);
+                    count -= sixes as f64;
+                }
                 if outcome == Outcome::Tie && cards == 6 {
                     let mixed = self.color_ties as f64 - self.same_color_ties;
+                    push(outcome, cards, Some(SuperTie::SameColorSixCard), false, self.same_color_ties);
+                    push(outcome, cards, Some(SuperTie::MixedColorSixCard), false, mixed);
                     count -= self.color_ties as f64;
-                    results.push((CoupResult { outcome, cards, super_tie: Some(SuperTie::SameColorSixCard) }, self.same_color_ties / total));
-                    results.push((CoupResult { outcome, cards, super_tie: Some(SuperTie::MixedColorSixCard) }, mixed / total));
                 }
-                let super_tie = (outcome == Outcome::Tie).then_some(SuperTie::OtherTie);
-                results.push((CoupResult { outcome, cards, super_tie }, count / total));
+                push(outcome, cards, (outcome == Outcome::Tie).then_some(SuperTie::OtherTie), false, count);
             }
         }
         results
     }
 
     pub fn bet_stats(&self, bet: Bet, payouts: &Payouts) -> BetStats {
+        let mut results = self.results();
+        if matches!(bet, Bet::PlayerPair | Bet::BankerPair) {
+            // A pair bet depends only on the hand's first two cards, so settle it on "pair" or
+            // "no pair" alone; the rest of the result doesn't matter to it.
+            let no_pair = results[0].0;
+            let pair = CoupResult { player_pair: true, banker_pair: true, ..no_pair };
+            results = vec![(pair, self.pair_probability), (no_pair, 1.0 - self.pair_probability)];
+        }
         let mut stats = BetStats::default();
-        for (result, probability) in self.results() {
+        for (result, probability) in results {
             let net = payouts.net_before_rebate(bet, &result);
             if net > 0.0 {
                 stats.win += probability;
@@ -149,7 +187,11 @@ impl Odds {
     }
 
     fn add(&mut self, player_total: usize, banker_total: usize, cards: usize, count: u64) {
-        self.counts[winner(player_total, banker_total) as usize][cards - 4] += count;
+        let outcome = winner(player_total, banker_total);
+        self.counts[outcome as usize][cards - 4] += count;
+        if outcome == Outcome::Banker && banker_total == 6 {
+            self.banker_sixes[cards - 4] += count;
+        }
     }
 }
 
@@ -184,7 +226,14 @@ pub fn analyze(shoe: &Shoe) -> Result<Odds, String> {
 
     let red_odds = shoe.red_odds();
 
-    let mut odds = Odds { total, counts: [[0; 3]; 3], color_ties: 0, same_color_ties: 0.0 };
+    let mut odds = Odds {
+        total,
+        counts: [[0; 3]; 3],
+        banker_sixes: [0; 3],
+        color_ties: 0,
+        same_color_ties: 0.0,
+        pair_probability: shoe.pair_probability(),
+    };
     let mut remaining = shoe.remaining;
     draw(&mut remaining, |remaining, p1, ways1| {
         draw(remaining, |remaining, b1, ways2| {
@@ -237,12 +286,13 @@ mod tests {
         assert!((actual - expected).abs() <= tolerance, "{actual} is not within {tolerance} of {expected}");
     }
 
-    /// The physical cards of a shoe holding `counts[v]` cards worth `v`, half of each value red.
+    /// The physical cards of a shoe holding `counts[v]` cards worth `v`: half of each value red,
+    /// and the cards worth 0 split evenly between 10, J, Q and K (`counts[0]` must divide by 4).
     fn physical_cards(counts: [u32; 10]) -> Vec<Card> {
         let mut cards = Vec::new();
         for (value, count) in (0u8..).zip(counts) {
-            let rank = if value == 0 { 13 } else { value };
             for i in 0..count {
+                let rank = if value == 0 { 10 + (i * 4 / count) as u8 } else { value };
                 let suit = if i % 2 == 0 { Suit::Hearts } else { Suit::Spades };
                 cards.push(Card { rank, suit });
             }
@@ -265,14 +315,27 @@ mod tests {
 
     #[test]
     fn matches_dealing_every_ordered_six_cards_of_a_small_shoe() {
-        for counts in [[4, 2, 0, 0, 0, 2, 2, 0, 2, 0], [2, 0, 2, 2, 2, 0, 2, 2, 0, 0], [4, 0, 2, 0, 2, 0, 0, 2, 0, 2]] {
+        for counts in [[4, 2, 0, 0, 0, 2, 2, 0, 2, 0], [4, 0, 2, 2, 2, 0, 2, 0, 0, 0], [8, 0, 0, 0, 2, 0, 2, 0, 0, 0]] {
             // Every ordered draw of 6 distinct cards is equally likely and 6 cards always finish
             // a coup, so dealing each one physically gives exact odds to compare against.
-            let mut dealt = Odds { total: 0, counts: [[0; 3]; 3], color_ties: 0, same_color_ties: 0.0 };
+            let mut dealt = Odds {
+                total: 0,
+                counts: [[0; 3]; 3],
+                banker_sixes: [0; 3],
+                color_ties: 0,
+                same_color_ties: 0.0,
+                pair_probability: 0.0,
+            };
+            let (mut player_pairs, mut banker_pairs) = (0u64, 0u64);
             for_each_selection(&mut physical_cards(counts), 0, 6, &mut |six| {
                 let result = Coup::deal(six).result();
                 dealt.total += 1;
                 dealt.counts[result.outcome as usize][result.cards - 4] += 1;
+                if result.banker_six {
+                    dealt.banker_sixes[result.cards - 4] += 1;
+                }
+                player_pairs += u64::from(result.player_pair);
+                banker_pairs += u64::from(result.banker_pair);
                 match result.super_tie {
                     Some(SuperTie::SameColorSixCard) => {
                         dealt.color_ties += 1;
@@ -283,9 +346,32 @@ mod tests {
                 }
             });
             let analyzed = analyze(&Shoe::from_counts(counts)).unwrap();
-            assert_eq!((analyzed.total, analyzed.counts, analyzed.color_ties), (dealt.total, dealt.counts, dealt.color_ties), "{counts:?}");
+            assert_eq!(
+                (analyzed.total, analyzed.counts, analyzed.banker_sixes, analyzed.color_ties),
+                (dealt.total, dealt.counts, dealt.banker_sixes, dealt.color_ties),
+                "{counts:?}"
+            );
             assert_close(analyzed.same_color_ties, dealt.same_color_ties, 1e-6);
+            assert_close(analyzed.pair_probability, player_pairs as f64 / dealt.total as f64, 1e-12);
+            assert_close(analyzed.pair_probability, banker_pairs as f64 / dealt.total as f64, 1e-12);
         }
+    }
+
+    #[test]
+    fn eight_deck_pairs_and_super_six_match_published_values() {
+        let odds = analyze(&Shoe::new(8)).unwrap();
+        let payouts = Payouts::default();
+        // Two cards of the same rank: 31 of the other 415 cards match the first.
+        assert_close(odds.pair_probability, 31.0 / 415.0, 1e-15);
+        for bet in [Bet::PlayerPair, Bet::BankerPair] {
+            let stats = odds.bet_stats(bet, &payouts);
+            assert_close(stats.win, 31.0 / 415.0, 1e-15);
+            assert_close(stats.ev, 12.0 * 31.0 / 415.0 - 1.0, 1e-12);
+        }
+        // Wizard of Odds: Banker wins with 6 5.3864% of the time; at 12:1 the house edge is 29.98%.
+        let super_six = odds.bet_stats(Bet::SuperSix, &payouts);
+        assert_close(super_six.win, 0.053864, 5e-7);
+        assert_close(super_six.ev, -0.2998, 5e-5);
     }
 
     #[test]
@@ -329,7 +415,7 @@ mod tests {
         for bet in Bet::ALL {
             let plain = odds.bet_stats(bet, &Payouts::default());
             let with_rebate = |basis| {
-                let payouts = Payouts { rebate: Rebate { rates: [rate; 6], basis }, ..Payouts::default() };
+                let payouts = Payouts { rebate: Rebate { rates: [rate; Bet::ALL.len()], basis }, ..Payouts::default() };
                 let stats = odds.bet_stats(bet, &payouts);
                 assert_eq!((stats.win, stats.lose, stats.push, stats.ev), (plain.win, plain.lose, plain.push, plain.ev));
                 stats.ev_with_rebate()

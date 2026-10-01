@@ -1,0 +1,20 @@
+# Payouts used by baccarat-ev. It reads this file from the folder it runs in,
+# or the file given with --config. Command-line options override what is here.
+#
+# Payouts are N for N:1. Leave a line out to use the built-in default.
+
+banker_commission = 0.05     # share of a Banker win kept by the house
+tie = 8                      # Tie
+big = 0.54                   # Big: 5 or 6 cards dealt
+small = 1.5                  # Small: only 4 cards dealt
+super_tie = [100, 25, 7]     # Super Tie: same-color six-card tie of 6-9, mixed-color one, any other tie
+pair = 11                    # Player Pair and Banker Pair: first two cards the same rank
+super_six = 12               # Super 6: Banker wins with 6
+
+[rebate]
+on = "all"                   # which bets earn it: "all", "losses" or "decided" (every bet that doesn't push)
+rate = 0                     # rate for every bet, e.g. 0.008 for 0.8%
+# A bet's own line overrides `rate`. Bets: banker, player, tie, big, small,
+# super-tie, player-pair, banker-pair, super-6. For example:
+# banker = 0.008
+# player = 0.008

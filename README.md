@@ -2,7 +2,7 @@
 
 Exact win rates and expected values (EV) for Punto Banco baccarat bets, plus a simulator that deals a full shoe.
 
-Bets covered: **Banker**, **Player**, **Tie**, **Big**, **Small** and **Super Tie**.
+Bets covered: **Banker**, **Player**, **Tie**, **Big**, **Small**, **Super Tie**, **Player Pair**, **Banker Pair** and **Super 6**.
 
 ## Quick start
 
@@ -20,13 +20,39 @@ cargo test --release                                  # run the tests
 ## Example output (8 decks)
 
 ```
-Bet               Win      Lose      Push   EV / unit   Win rate excl. ties
-Banker       45.8597%  44.6247%   9.5156%    -1.0579%              50.6825%
-Player       44.6247%  45.8597%   9.5156%    -1.2351%              49.3175%
-Tie           9.5156%  90.4844%   0.0000%   -14.3596%                     -
-Big          62.1132%  37.8868%   0.0000%    -4.3457%                     -
-Small        37.8868%  62.1132%   0.0000%    -5.2829%                     -
-Super Tie     9.5156%  90.4844%   0.0000%    -5.9716%                     -
+Bet                 Win      Lose      Push   EV / unit   Win rate excl. ties
+Banker         45.8597%  44.6247%   9.5156%    -1.0579%              50.6825%
+Player         44.6247%  45.8597%   9.5156%    -1.2351%              49.3175%
+Tie             9.5156%  90.4844%   0.0000%   -14.3596%                     -
+Big            62.1132%  37.8868%   0.0000%    -4.3457%                     -
+Small          37.8868%  62.1132%   0.0000%    -5.2829%                     -
+Super Tie       9.5156%  90.4844%   0.0000%    -5.9716%                     -
+Player Pair     7.4699%  92.5301%   0.0000%   -10.3614%                     -
+Banker Pair     7.4699%  92.5301%   0.0000%   -10.3614%                     -
+Super 6         5.3864%  94.6136%   0.0000%   -29.9772%                     -
+```
+
+## Payouts file
+
+Payouts and the rebate are set in [baccarat.toml](baccarat.toml). The tool reads that file from the folder it runs in, or the file given with `--config FILE`. With no file, it uses the built-in defaults, which are the values in the shipped `baccarat.toml`. Command-line options override the file for one run, and the first lines of the output say where the payouts came from.
+
+```toml
+tie = 9                      # payouts are N for N:1
+big = 0.5
+super_six = 15
+
+[rebate]
+on = "decided"               # "all", "losses" or "decided"
+rate = 0                     # rate for every bet
+banker = 0.008               # a bet's own line overrides `rate`
+player = 0.008
+```
+
+Leave a line out to keep its default. A mistake stops the run with the line number, for example `baccarat.toml: line 2: unknown setting "super_6"`.
+
+```bash
+cargo run --release -- --config macau.toml
+cargo run --release -- simulate --config macau.toml --tie-pays 8
 ```
 
 ## Options
@@ -37,11 +63,14 @@ Super Tie     9.5156%  90.4844%   0.0000%    -5.9716%                     -
 | `--dealt CARD...` | analyze | Cards already dealt (A, 2-9, 10/T, J, Q, K) | none |
 | `--cut N` | simulate | Cut card position, in cards from the end (11 or more) | 14 |
 | `--seed N` | simulate | Seed that replays a shoe | random |
+| `--config FILE` | both | Read payouts and the rebate from FILE | `baccarat.toml` if present |
 | `--commission RATE` | both | Banker commission | 0.05 |
 | `--tie-pays N` | both | Tie pays N:1 | 8 |
 | `--super-tie-pays S,M,O` | both | Super Tie payouts (see below) | 100,25,7 |
+| `--pair-pays N` | both | Player Pair and Banker Pair pay N:1 | 11 |
+| `--super-6-pays N` | both | Super 6 pays N:1 | 12 |
 | `--rebate RATE` | both | Pay back RATE of every bet, e.g. `0.008` for 0.8% | 0 |
-| `--rebate BET=RATE,...` | both | A rate per bet (others get none), e.g. `banker=0.008,player=0.008`. Bets: banker, player, tie, big, small, super-tie | none |
+| `--rebate BET=RATE,...` | both | A rate per bet (others get none), e.g. `banker=0.008,player=0.008`. Bets: banker, player, tie, big, small, super-tie, player-pair, banker-pair, super-6 | none |
 | `--rebate-on all\|losses\|decided` | both | Which bets earn the rebate: every bet, only losing bets, or every bet that doesn't push | all |
 
 With a rebate, the analysis adds **Rebate** and **EV + rebate** columns, and the simulator shows the bet result, the rebate and the total separately. Win, lose and push are still based on the bet itself, so a rebate never turns a push into a win.
@@ -60,14 +89,18 @@ cargo run --release -- --rebate banker=0.008,player=0.008 --rebate-on decided
 | Big | 5 or 6 cards are dealt | 0.54:1 |
 | Small | Only 4 cards are dealt | 1.5:1 |
 | Super Tie | Hands are equal (loses otherwise) | 100:1 six-card tie on 6-9, all one color; 25:1 same but mixed colors; 7:1 any other tie |
+| Player Pair | Player's first two cards are the same rank (K-K yes, K-Q no) | 11:1 |
+| Banker Pair | Banker's first two cards are the same rank | 11:1 |
+| Super 6 | Banker wins with a total of 6 (2 or 3 cards) | 12:1 |
 
-Super Tie follows the Bicycle Casino version documented by [Wizard of Odds](https://wizardofodds.com/games/baccarat/side-bets/super-tie/). Other casinos use the name for different bets.
+Super Tie follows the Bicycle Casino version documented by [Wizard of Odds](https://wizardofodds.com/games/baccarat/side-bets/super-tie/). Other casinos use the name for different bets. Super 6 is the side bet only; the no-commission Banker bet that usually goes with it (a Banker win with 6 pays 1:2) is not built yet.
 
 ## Project layout
 
 ```
 src/rules.rs      cards, third-card rules, dealing one coup
 src/bets.rs       bets and payouts
+src/config.rs     reads payouts and the rebate from baccarat.toml
 src/analysis.rs   exact odds by going through every possible deal
 src/simulator.rs  shuffle, burn, deal a full shoe to the cut card
 src/main.rs       command-line tool

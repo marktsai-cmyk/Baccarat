@@ -77,6 +77,11 @@ pub struct CoupResult {
     pub cards: usize,
     /// `Some` exactly when the coup is a tie.
     pub super_tie: Option<SuperTie>,
+    /// Banker won with a total of 6.
+    pub banker_six: bool,
+    /// The hand's first two cards are the same rank (K-K is a pair, K-Q is not).
+    pub player_pair: bool,
+    pub banker_pair: bool,
 }
 
 pub fn player_draws(player_total: usize) -> bool {
@@ -157,7 +162,8 @@ impl Coup {
 
     pub fn result(&self) -> CoupResult {
         let total = self.player_total();
-        let outcome = winner(total, self.banker_total());
+        let banker_total = self.banker_total();
+        let outcome = winner(total, banker_total);
         let cards = self.cards_used();
         let super_tie = (outcome == Outcome::Tie).then(|| {
             let first_is_red = self.player[0].is_red();
@@ -169,7 +175,14 @@ impl Coup {
                 SuperTie::MixedColorSixCard
             }
         });
-        CoupResult { outcome, cards, super_tie }
+        CoupResult {
+            outcome,
+            cards,
+            super_tie,
+            banker_six: outcome == Outcome::Banker && banker_total == 6,
+            player_pair: self.player[0].rank == self.player[1].rank,
+            banker_pair: self.banker[0].rank == self.banker[1].rank,
+        }
     }
 }
 
@@ -214,7 +227,21 @@ mod tests {
     fn natural_ends_the_coup_after_four_cards() {
         let cards = [8, 1, 13, 2, 5, 5].map(|rank| card(rank, Suit::Clubs));
         let coup = Coup::deal(&cards);
-        assert_eq!(coup.result(), CoupResult { outcome: Outcome::Player, cards: 4, super_tie: None });
+        let expected = CoupResult { outcome: Outcome::Player, cards: 4, super_tie: None, banker_six: false, player_pair: false, banker_pair: false };
+        assert_eq!(coup.result(), expected);
+    }
+
+    #[test]
+    fn finds_pairs_by_rank_and_banker_wins_with_six() {
+        // Player K + K = 0 draws a 5; Banker 3 + 3 = 6 stands on the Player's 5 and wins with 6.
+        let cards = [card(13, Suit::Clubs), card(3, Suit::Hearts), card(13, Suit::Spades), card(3, Suit::Clubs), card(5, Suit::Clubs)];
+        let result = Coup::deal(&cards).result();
+        assert!(result.player_pair && result.banker_pair && result.banker_six);
+
+        // K and Q are both worth 0 but are not a pair.
+        let mut mixed_faces = cards;
+        mixed_faces[2].rank = 12;
+        assert!(!Coup::deal(&mixed_faces).result().player_pair);
     }
 
     #[test]
@@ -222,7 +249,7 @@ mod tests {
         // Player 3 + 2 = 5 draws a 2 for 7; Banker 4 + K = 4 draws on that 2 and gets a 3 for 7.
         let red = [card(3, Suit::Hearts), card(4, Suit::Hearts), card(2, Suit::Diamonds), card(13, Suit::Hearts), card(2, Suit::Hearts), card(3, Suit::Diamonds)];
         let result = Coup::deal(&red).result();
-        assert_eq!(result, CoupResult { outcome: Outcome::Tie, cards: 6, super_tie: Some(SuperTie::SameColorSixCard) });
+        assert_eq!((result.outcome, result.cards, result.super_tie), (Outcome::Tie, 6, Some(SuperTie::SameColorSixCard)));
 
         let mut mixed = red;
         mixed[5].suit = Suit::Clubs;

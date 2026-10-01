@@ -10,10 +10,23 @@ pub enum Bet {
     Big,
     Small,
     SuperTie,
+    PlayerPair,
+    BankerPair,
+    SuperSix,
 }
 
 impl Bet {
-    pub const ALL: [Bet; 6] = [Bet::Banker, Bet::Player, Bet::Tie, Bet::Big, Bet::Small, Bet::SuperTie];
+    pub const ALL: [Bet; 9] = [
+        Bet::Banker,
+        Bet::Player,
+        Bet::Tie,
+        Bet::Big,
+        Bet::Small,
+        Bet::SuperTie,
+        Bet::PlayerPair,
+        Bet::BankerPair,
+        Bet::SuperSix,
+    ];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -23,7 +36,19 @@ impl Bet {
             Bet::Big => "Big",
             Bet::Small => "Small",
             Bet::SuperTie => "Super Tie",
+            Bet::PlayerPair => "Player Pair",
+            Bet::BankerPair => "Banker Pair",
+            Bet::SuperSix => "Super 6",
         }
+    }
+
+    /// Name used in options and config files, e.g. "super-tie".
+    pub fn key(self) -> String {
+        self.name().to_ascii_lowercase().replace(' ', "-")
+    }
+
+    pub fn from_key(key: &str) -> Option<Bet> {
+        Bet::ALL.into_iter().find(|bet| bet.key() == key.trim().to_ascii_lowercase())
     }
 }
 
@@ -42,12 +67,12 @@ pub enum RebateBasis {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Rebate {
     /// Rate for each bet, in the order of `Bet::ALL`, e.g. 0.008 for 0.8%.
-    pub rates: [f64; 6],
+    pub rates: [f64; Bet::ALL.len()],
     pub basis: RebateBasis,
 }
 
 impl Rebate {
-    pub const NONE: Rebate = Rebate { rates: [0.0; 6], basis: RebateBasis::AllBets };
+    pub const NONE: Rebate = Rebate { rates: [0.0; Bet::ALL.len()], basis: RebateBasis::AllBets };
 
     pub fn is_none(&self) -> bool {
         self.rates.iter().all(|&rate| rate == 0.0)
@@ -66,13 +91,27 @@ pub struct Payouts {
     pub small: f64,
     /// Super Tie: same-color six-card tie on 6-9, mixed-color one, any other tie.
     pub super_tie: [f64; 3],
+    /// Player Pair and Banker Pair: the hand's first two cards are the same rank.
+    pub pair: f64,
+    /// Super 6: Banker wins with a total of 6.
+    pub super_six: f64,
     pub rebate: Rebate,
 }
 
 impl Default for Payouts {
     fn default() -> Self {
-        // Big/Small as dealt by Playtech; Super Tie as at the Bicycle Casino.
-        Self { banker_commission: 0.05, tie: 8.0, big: 0.54, small: 1.5, super_tie: [100.0, 25.0, 7.0], rebate: Rebate::NONE }
+        // Big/Small as dealt by Playtech; Super Tie as at the Bicycle Casino; Super 6 at the
+        // common 12:1.
+        Self {
+            banker_commission: 0.05,
+            tie: 8.0,
+            big: 0.54,
+            small: 1.5,
+            super_tie: [100.0, 25.0, 7.0],
+            pair: 11.0,
+            super_six: 12.0,
+            rebate: Rebate::NONE,
+        }
     }
 }
 
@@ -118,6 +157,9 @@ impl Payouts {
                 Some(SuperTie::OtherTie) => self.super_tie[2],
                 None => -1.0,
             },
+            Bet::PlayerPair => pays_if(result.player_pair, self.pair),
+            Bet::BankerPair => pays_if(result.banker_pair, self.pair),
+            Bet::SuperSix => pays_if(result.banker_six, self.super_six),
         }
     }
 }
@@ -126,37 +168,45 @@ impl Payouts {
 mod tests {
     use super::*;
 
+    fn result(outcome: Outcome, cards: usize, super_tie: Option<SuperTie>) -> CoupResult {
+        CoupResult { outcome, cards, super_tie, banker_six: false, player_pair: false, banker_pair: false }
+    }
+
     #[test]
     fn settles_every_bet() {
         let payouts = Payouts::default();
         let nets = |result: CoupResult| Bet::ALL.map(|bet| payouts.net(bet, &result));
 
-        let banker_natural = CoupResult { outcome: Outcome::Banker, cards: 4, super_tie: None };
-        assert_eq!(nets(banker_natural), [0.95, -1.0, -1.0, -1.0, 1.5, -1.0]);
+        let banker_natural = result(Outcome::Banker, 4, None);
+        assert_eq!(nets(banker_natural), [0.95, -1.0, -1.0, -1.0, 1.5, -1.0, -1.0, -1.0, -1.0]);
 
-        let player_five_cards = CoupResult { outcome: Outcome::Player, cards: 5, super_tie: None };
-        assert_eq!(nets(player_five_cards), [-1.0, 1.0, -1.0, 0.54, -1.0, -1.0]);
+        let player_five_cards = result(Outcome::Player, 5, None);
+        assert_eq!(nets(player_five_cards), [-1.0, 1.0, -1.0, 0.54, -1.0, -1.0, -1.0, -1.0, -1.0]);
 
-        let color_tie = CoupResult { outcome: Outcome::Tie, cards: 6, super_tie: Some(SuperTie::SameColorSixCard) };
-        assert_eq!(nets(color_tie), [0.0, 0.0, 8.0, 0.54, -1.0, 100.0]);
+        let color_tie = result(Outcome::Tie, 6, Some(SuperTie::SameColorSixCard));
+        assert_eq!(nets(color_tie), [0.0, 0.0, 8.0, 0.54, -1.0, 100.0, -1.0, -1.0, -1.0]);
 
         let mixed_tie = CoupResult { super_tie: Some(SuperTie::MixedColorSixCard), ..color_tie };
         assert_eq!(payouts.net(Bet::SuperTie, &mixed_tie), 25.0);
 
-        let four_card_tie = CoupResult { outcome: Outcome::Tie, cards: 4, super_tie: Some(SuperTie::OtherTie) };
-        assert_eq!(nets(four_card_tie), [0.0, 0.0, 8.0, -1.0, 1.5, 7.0]);
+        let four_card_tie = result(Outcome::Tie, 4, Some(SuperTie::OtherTie));
+        assert_eq!(nets(four_card_tie), [0.0, 0.0, 8.0, -1.0, 1.5, 7.0, -1.0, -1.0, -1.0]);
+
+        let banker_six_with_pairs = CoupResult { banker_six: true, player_pair: true, banker_pair: true, ..result(Outcome::Banker, 5, None) };
+        assert_eq!(nets(banker_six_with_pairs), [0.95, -1.0, -1.0, 0.54, -1.0, -1.0, 11.0, 11.0, 12.0]);
     }
 
     #[test]
     fn pays_rebate_on_the_chosen_bets() {
-        let tie = CoupResult { outcome: Outcome::Tie, cards: 4, super_tie: Some(SuperTie::OtherTie) };
+        let tie = result(Outcome::Tie, 4, Some(SuperTie::OtherTie));
         let rebate_on = |basis| {
-            let payouts = Payouts { rebate: Rebate { rates: [0.01, 0.01, 0.0, 0.02, 0.02, 0.0], basis }, ..Payouts::default() };
+            let rates = [0.01, 0.01, 0.0, 0.02, 0.02, 0.0, 0.0, 0.0, 0.0];
+            let payouts = Payouts { rebate: Rebate { rates, basis }, ..Payouts::default() };
             Bet::ALL.map(|bet| payouts.net(bet, &tie))
         };
         // On a 4-card tie: Banker and Player push, Tie wins, Big loses, Small wins, Super Tie wins.
-        assert_eq!(rebate_on(RebateBasis::AllBets), [0.01, 0.01, 8.0, -0.98, 1.52, 7.0]);
-        assert_eq!(rebate_on(RebateBasis::Losses), [0.0, 0.0, 8.0, -0.98, 1.5, 7.0]);
-        assert_eq!(rebate_on(RebateBasis::DecidedBets), [0.0, 0.0, 8.0, -0.98, 1.52, 7.0]);
+        assert_eq!(rebate_on(RebateBasis::AllBets), [0.01, 0.01, 8.0, -0.98, 1.52, 7.0, -1.0, -1.0, -1.0]);
+        assert_eq!(rebate_on(RebateBasis::Losses), [0.0, 0.0, 8.0, -0.98, 1.5, 7.0, -1.0, -1.0, -1.0]);
+        assert_eq!(rebate_on(RebateBasis::DecidedBets), [0.0, 0.0, 8.0, -0.98, 1.52, 7.0, -1.0, -1.0, -1.0]);
     }
 }
